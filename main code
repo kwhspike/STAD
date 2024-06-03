@@ -1,0 +1,394 @@
+setwd("D:/xianyujie/xianyujie/her2在stad中")
+library(data.table)
+library(tidyverse)
+samplelist=fread("stad_tcga_clinical_data.tsv")#####来自cbioportal
+
+stad.exp=fread("TCGA-STAD.htseq_counts.tsv.gz",header = T, sep = '\t',data.table = F)
+stad.phe=fread("TCGA-STAD.GDC_phenotype.tsv.gz",header = T, sep = '\t',data.table = F)
+stad.pro=fread("gencode.v22.annotation.gene.probeMap",header = T, sep = '\t',data.table = F)
+
+stad.pro=stad.pro[,c(1,2)]
+colnames(stad.pro)
+###用merge函数将探针转化的信息和表达谱信息进行合并
+stad.fkpm.pro=merge(stad.pro,stad.exp,by.y ="Ensembl_ID",by.x = "id" )
+stad.fkpm.pro.1 <- aggregate(stad.fkpm.pro[,-c(1,2)], list(stad.fkpm.pro$gene), FUN=sum) #如果电脑配置不高，可以选择运行后面的distinct函数取重复基因行
+stad.fkpm.pro <- column_to_rownames(stad.fkpm.pro.1,"Group.1")
+rownames(stad.phe)=stad.phe$submitter_id.samples
+colnames(stad.phe)
+table(stad.phe$sample_type.samples)
+stad.phe.t=filter(stad.phe,sample_type.samples=="Primary Tumor")
+
+stad.phe.n=filter(stad.phe,sample_type.samples=="Solid Tissue Normal")
+rm(stad.exp,stad.phe,stad.pro,stad.fkpm.pro.1)
+samplelist$`Sample ID`=paste0(samplelist$`Sample ID`,"A")
+stad.her2.neg=stad.phe.t[rownames(stad.phe.t)%in%samplelist$`Sample ID`,]
+z2=setdiff(rownames(stad.phe.t),rownames(stad.her2.neg))####取补集函数
+stad.her2.neg=stad.phe.t[z2,]
+
+#########DFNA5的生存分析
+stad.exp=stad.fkpm.pro[colnames(stad.fkpm.pro)%in%stad.her2.neg$submitter_id.samples]
+GSDME=stad.exp["DFNA5",]
+GSDME=t(GSDME)
+
+
+os.time <- rep(0, nrow(stad.her2.neg))
+dead.index <- which(stad.her2.neg$days_to_death > 0)
+alive.index <- which(stad.her2.neg$days_to_last_follow_up.diagnoses > 0)
+os.time[dead.index] <- stad.her2.neg$days_to_death[dead.index]
+os.time[alive.index] <- stad.her2.neg$days_to_last_follow_up.diagnoses[alive.index]
+# 获取终点事件，并用0，1表示
+os.index <- which(os.time > 0)
+os.time <- os.time[os.index]
+status <- rep(0, nrow(stad.her2.neg))
+dead.index <- which(stad.her2.neg$vital_status.demographic == "Dead")
+alive.index <- which(stad.her2.neg$vital_status.demographic == "Alive")
+status[dead.index] <- 0
+status[alive.index] <- 1
+status <- status[os.index]
+stad.her2.neg <- stad.her2.neg[os.index, ]
+
+# 提取感兴趣的表型信息
+surv.data <- data.frame(gender = stad.her2.neg$gender.demographic,
+                        age = stad.her2.neg$age_at_initial_pathologic_diagnosis,
+                        status = status,
+                        OS = os.time)
+rownames(surv.data) <- rownames(stad.her2.neg)
+GSDME=merge(GSDME,surv.data,by.x=0,by.y=0)
+GSDME.high=filter(GSDME,DFNA5>median(GSDME$DFNA5))
+GSDME.high$group="high"
+GSDME.low=filter(GSDME,DFNA5<=median(GSDME$DFNA5))
+GSDME.low$group="low"
+GSDME=rbind(GSDME.low,GSDME.high)
+########
+library(survival)
+library(survminer)
+surv <- survfit(Surv(GSDME$OS,event=GSDME$status)~GSDME$group,
+                data=GSDME)
+ggsurvplot(surv ,
+           pval = T,
+           conf.int = TRUE,
+           legend.title = "pathologic_M",
+           legend="right",
+           surv.median.line = "hv",
+           palette = c("blue","red"),
+           censor=F,
+           risk.table=T,
+           xlab="overall survival",
+           title="survival analysis")
+rm(GSDME,GSDME.low,GSDME.high,stad.exp,surv.data,surv,alive.index,dead.index,os.index
+   ,os.time,osVersion)
+########################单个基因基因表达差异
+stad.her2.neg.exp=stad.fkpm.pro[,colnames(stad.fkpm.pro)%in%rownames(stad.her2.neg)]
+stad.her2.neg.exp=stad.fkpm.pro[,colnames(stad.fkpm.pro)%in%rownames(stad.her2.neg)]
+stad.n=stad.fkpm.pro[,colnames(stad.fkpm.pro)%in%rownames(stad.phe.n)]
+mergedata=cbind(stad.her2.neg.exp,stad.her2.neg.exp,stad.n)
+
+
+metadata=c(rep("HER2 amplified",49),rep("No HER2 amplified",326),rep("Control",32))###########构建分组信息
+metadata=as.data.frame(metadata)####
+colnames(metadata)="dex"
+metadata$dex <- factor(metadata$dex,levels=c("HER2 amplified","No HER2 amplified","Control"))
+plot_data<-data.frame(t(mergedata["BCL2L1",]))
+
+plot_data <- cbind(plot_data,Group=metadata$dex)
+library(ggplot2)
+my_comparisons <- list(c("Control", "No HER2 amplified"),
+                       c("Control", "HER2 amplified")
+                       ,c("No HER2 amplified", "HER2 amplified"))
+p<-ggplot(plot_data,aes(x=group,y=DFNA5,fill=group))+
+  geom_boxplot()+
+  theme_classic()+
+  ggpubr::stat_compare_means(comparisons=my_comparisons,exact=NULL,
+                             color="black",method="wilcox.test")+
+  theme(legend.position = "none")+
+  ylab("DFNA5 counts")
+p
+##########################
+library(ggplot2)
+library(ggpubr)
+library(ggsci) #配色包
+p<- ggplot(data=plot_data)+ 
+  geom_boxplot(mapping=aes(x=Group,y=BCL2L1,color = Group ), #箱线图
+               alpha = 0.5,
+               size=1.5,
+               width = 0.6)+ 
+  geom_jitter(mapping=aes(x=Group,y=BCL2L1,colour = Group), #散点
+              alpha = 0.3,size=3)+
+  scale_color_manual(limits=c("HER2 amplified","No HER2 amplified","Control"), 
+                     values=c("#922927","#E29827","#85B22E"))+ #颜色
+  geom_signif(mapping=aes(x=Group,y=BCL2L1), # 不同组别的显著性
+              comparisons = list(c("Control", "No HER2 amplified"),#组之间比较
+                                 c("Control", "HER2 amplified")
+                                 ,c("No HER2 amplified", "HER2 amplified")),
+              map_signif_level=F, # T显示显著性，F显示p value
+              tip_length=c(0,0,0,0,0,0,0,0,0,0,0,0), # 修改显著性线两端的长短
+              y_position = c(16,16.5,17), # 设置显著性线的位置高度
+              size=1, # 修改线的粗细
+              textsize = 4, # 修改显著性标记的大小
+              #test = "t.test"
+             )+ # 检验的类型
+  theme_classic(  # 主题设置，这个是无线条主题
+    base_line_size = 1 # 坐标轴的粗细
+  )+
+  labs(title="BCL2L1",x="",y="BCL2L1 COUNTS")+ # 添加标题，x轴，y轴内容
+  theme(plot.title = element_text(size = 18,
+                                  colour = "black",
+                                  hjust = 0.5),
+        axis.title.y = element_text(size = 16.5, 
+                                    # family = "myFont", 
+                                    color = "black",
+                                    face = "bold", 
+                                    vjust = 1.9, 
+                                    hjust = 0.5, 
+                                    angle = 90),
+        legend.title = element_text(color="black", # 修改图例的标题
+                                    size=16.5, 
+                                    face="bold"),
+        legend.text = element_text(color="black", # 设置图例标签文字
+                                   size = 16.5, 
+                                   face = "bold"),
+        axis.text.x = element_text(size = 14.3,  # 修改X轴上字体大小，
+                                   color = "black", # 颜色
+                                   face = "bold", #  face取值：plain普通，bold加粗，italic斜体，bold.italic斜体加粗
+                                   vjust = 0.5, # 位置
+                                   hjust = 0.5, 
+                                   angle = 0), #角度
+        axis.text.y = element_text(size = 14.3,  
+                                   color = "black",
+                                   face = "bold", 
+                                   vjust = 0.5, 
+                                   hjust = 0.5, 
+                                   angle = 0) 
+  )
+p
+################
+p <- ggplot(plot_data, aes(x=group,y=BCL2,color = group)) +
+  # 绘制箱线图
+  geom_boxplot(aes(fill=group),
+               alpha=0.1)+ # 设置透明度
+  # 绘制散点
+  geom_jitter()+
+  # 设置颜色
+  scale_color_manual(values = pal_npg('nrc')(9))+
+  scale_fill_manual(values = pal_npg('nrc')(9))+
+  # 设置主题
+  theme_bw()+
+  # 去除网格线
+  theme(panel.grid = element_blank())
+p3 <- p + stat_compare_means(comparisons=my_comparisons,
+                             label.y = c(15, 16, 17),
+                             method="wilcox.test")
+p3
+##################################################33免疫细胞分析
+setwd("D:/xianyujie/xianyujie/her2在stad中/免疫细胞/bcl2上调或下调在HER2+的情况")
+library(tidyverse)
+library(dplyr)
+
+BCL2L1=as.numeric(stad.her2.pos.exp["BCL2L1",])
+BCL2L1=as.data.frame(BCL2L1)
+rownames(BCL2L1)=colnames(stad.her2.pos.exp)
+BCL2L1.high=filter(BCL2L1,BCL2L1>median(BCL2L1))
+BCL2L1.low=filter(BCL2L1,BCL2L1<=median(BCL2L1))
+BCL2L1.high=stad.her2.pos.exp[colnames(stad.her2.pos.exp)%in%rownames(BCL2L1.high)]
+BCL2L1.low=stad.her2.pos.exp[colnames(stad.her2.pos.exp)%in%rownames(BCL2L1.low)]
+
+colnames(BCL2L1.high)=paste0("high",1:24)
+colnames(BCL2L1.low)=paste0("low",1:25)
+counts=cbind(BCL2L1.high,BCL2L1.low)
+metadata.1=c(rep("high",24),rep("low",25))
+metadata.1=as.data.frame(metadata.1)
+colnames(metadata.1)="dex"
+counts=2^counts+1
+counts.1=apply(counts, 2, as.integer)
+counts.1[is.na(counts.1)] <- 0
+rownames(counts.1)=rownames(counts)
+counts=as.data.frame(counts.1)
+############
+#BiocManager::install("DESeq2")
+library(DESeq2)
+dds <- DESeqDataSetFromMatrix(countData=counts, 
+                              colData=metadata.1, 
+                              design=~dex, 
+                              tidy=FALSE)
+#####数据预处理
+dds <- dds [ rowSums(counts(dds)) > 1, ]
+########标准化
+counts.1 <- vst(dds, blind = FALSE)
+counts.1=assay(counts.1)
+##########免疫分析
+library('CIBERSORT')
+###########3
+#读取包自带的LM22文件（免疫细胞特征基因文件）
+sig_matrix <- system.file("extdata", "LM22.txt", package = "CIBERSORT")
+results <- cibersort(sig_matrix,counts.1,perm = 1000,QN = T)
+
+#分组
+group_list=c(rep('high',24),rep('low',25))#rep函数，意思是把control重复18次，tumor重复18次
+##转化为因子  这里可以不用理解 为了后面差异分析的矩阵构建
+group_list=factor(group_list,levels = c("high","low"))
+## 3. 绘图
+# 3.1 数据粗处理
+data.2 <- as.data.frame(results[,1:22])
+
+data.2$group <- group_list
+data.2$sample <- row.names(data.2)
+
+# 2.2 融合数据
+library(reshape2)
+data.new = melt(data.2)
+??melt
+## Using group, sample as id variables
+
+colnames(data.new)=c("Group","Sample","Celltype","Composition")  #设置行名
+head(data.new)
+
+# 3.3 按免疫细胞占比中位数排序绘图（可选）
+plot_order = data.new[data.new$Group=="high",] %>% 
+  group_by(Celltype) %>% 
+  summarise(m = median(Composition)) %>% 
+  arrange(desc(m)) %>% 
+  pull(Celltype)
+
+## `summarise()` ungrouping output (override with `.groups` argument)
+
+data.new$Celltype = factor(data.new$Celltype,levels = plot_order)
+
+
+###条形图
+
+library(RColorBrewer)
+library(tidyr)
+mypalette <- colorRampPalette(brewer.pal(12,"Paired"))
+library(ggplot2)
+barplot.data=ggplot(data.new,aes(Sample,Composition,fill = Celltype)) + 
+  geom_bar(stat = 'identity',width = 0.5,colour='mypalette')+theme_bw()+
+  guides(fill=guide_legend(ncol=1))+scale_fill_manual(values = mypalette(22))
+barplot.data
+barplot.data;ggsave("cibersort2.png",barplot.data,height=15,width=25,unit="cm")
+
+###箱线图
+library(ggpubr)
+boxplot.data=ggboxplot(
+  data.new,
+  x = "Celltype",
+  y = "Composition",
+  color = "black",
+  fill = "Group",
+  xlab = "",
+  ylab = "Cell composition",
+  title = "Cell composition between two group"
+) +
+  stat_compare_means(
+    aes(group = Group),
+    label = "p.signif", 
+    method = "wilcox.test",
+    hide.ns = T,
+    size = 4.5
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45,hjust = 1,vjust = 1),
+    text = element_text(size = 15,face = "bold"))+
+  coord_cartesian(clip = 'off')
+boxplot.data
+ggsave("cibersort1.png",boxplot.data,height=15,width=25,unit="cm")
+
+
+########################
+#BiocManager::install("limma")
+
+library(GSVA)
+library(clusterProfiler)
+library(GSEABase)
+#安装GSEA包
+install.packages("devtools")
+devtools::install_github("GSEA-MSigDB/GSEA_R")
+#加载GSEA包
+library(GSEA)
+
+####在GSEA官网（需要用自己的邮箱登录）上下载gmt文件并读取
+kegggmt2 <- read.gmt("c2.cp.kegg.v7.5.1.symbols.gmt")
+
+kegg_list = split(kegggmt2$gene, kegggmt2$term)
+
+
+
+#先用class函数确认nromalized.data这个待分析的数据是否为矩阵，如果不是，可以用as.matrix将其转为矩阵后再进行gsva计算
+?gsva
+
+kegg2 <- gsva(counts.1, kegg_list, kcdf="Gaus",method = "gsva")
+
+#############通路打分后，进行差异分析
+library(limma)
+##构建差异分析的矩阵
+design=model.matrix(~ group_list)
+colnames(design) <- levels(group_list)
+rownames(design) <- colnames(kegg2)
+##
+fit=lmFit(kegg2,design)
+fit=eBayes(fit) 
+allDiff=topTable(fit,coef=2,adjust='fdr',number=Inf) ####提取差异通路
+allDiff=filter(allDiff,adj.P.Val<0.05)
+############箱线图gsva
+
+metadata=c(rep("High BCL2L2",24),rep("Low BCL2L2",25))###########构建分组信息
+metadata=as.data.frame(metadata)####
+colnames(metadata)="dex"
+metadata$dex <- factor(metadata$dex,levels=c("Low BCL2L2","High BCL2L2"))
+plot_data<-data.frame(kegg2["KEGG_T_CELL_RECEPTOR_SIGNALING_PATHWAY",]) 
+colnames(plot_data)[1]="KEGG_T_CELL_RECEPTOR_SIGNALING_PATHWAY"
+plot_data <- cbind(plot_data,Group=metadata$dex)
+library(ggplot2)
+library(ggpubr)
+library(ggsci) #配色包
+p<- ggplot(data=plot_data)+ 
+  geom_boxplot(mapping=aes(x=Group,y=KEGG_T_CELL_RECEPTOR_SIGNALING_PATHWAY,color = Group ), #箱线图
+               alpha = 0.5,
+               size=1.5,
+               width = 0.6)+ 
+  geom_jitter(mapping=aes(x=Group,y=KEGG_T_CELL_RECEPTOR_SIGNALING_PATHWAY,colour = Group), #散点
+              alpha = 0.3,size=3)+
+  scale_color_manual(limits=c("Low BCL2L2","High BCL2L2"), 
+                     values=c("#922927","#E29827"))+ #颜色
+  geom_signif(mapping=aes(x=Group,y=KEGG_T_CELL_RECEPTOR_SIGNALING_PATHWAY), # 不同组别的显著性
+              comparisons = list(c("Low BCL2L2","High BCL2L2")),
+              map_signif_level=F, # T显示显著性，F显示p value
+              #tip_length=c(0,0,0,0,0,0,0,0,0,0,0,0), # 修改显著性线两端的长短
+              #y_position = c(16,16.5,17), # 设置显著性线的位置高度
+              size=1, # 修改线的粗细
+              textsize = 4, # 修改显著性标记的大小
+              #test = "t.test"
+  )+ # 检验的类型
+  theme_classic(  # 主题设置，这个是无线条主题
+    base_line_size = 1 # 坐标轴的粗细
+  )+
+  labs(title="KEGG_T_CELL_RECEPTOR_SIGNALING_PATHWAY(BCL2L2)",x="",y="GSVA Score")+ # 添加标题，x轴，y轴内容
+  theme(plot.title = element_text(size = 16,
+                                  colour = "black",
+                                  hjust = 0.5),
+        axis.title.y = element_text(size = 16.5, 
+                                    # family = "myFont", 
+                                    color = "black",
+                                    face = "bold", 
+                                    vjust = 1.9, 
+                                    hjust = 0.5, 
+                                    angle = 90),
+        legend.title = element_text(color="black", # 修改图例的标题
+                                    size=16.5, 
+                                    face="bold"),
+        legend.text = element_text(color="black", # 设置图例标签文字
+                                   size = 16.5, 
+                                   face = "bold"),
+        axis.text.x = element_text(size = 14.3,  # 修改X轴上字体大小，
+                                   color = "black", # 颜色
+                                   face = "bold", #  face取值：plain普通，bold加粗，italic斜体，bold.italic斜体加粗
+                                   vjust = 0.5, # 位置
+                                   hjust = 0.5, 
+                                   angle = 0), #角度
+        axis.text.y = element_text(size = 14.3,  
+                                   color = "black",
+                                   face = "bold", 
+                                   vjust = 0.5, 
+                                   hjust = 0.5, 
+                                   angle = 0) 
+  )
+p
