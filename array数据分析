@@ -1,0 +1,40 @@
+library(data.table)
+library(XML)
+library(methods)
+data=fread("GSE7803.top.table.tsv")
+
+library(GEOquery)
+library(limma)
+
+# load series and platform data from GEO
+
+gset <- getGEO(filename = "GSE166466_series_matrix.txt.gz",getGPL=F)
+# log2 transformation
+ex <- exprs(gset)
+qx <- as.numeric(quantile(ex, c(0., 0.25, 0.5, 0.75, 0.99, 1.0), na.rm=T))
+LogC <- (qx[5] > 100) ||
+  (qx[6]-qx[1] > 50 && qx[2] > 0)
+if (LogC) { ex[which(ex <= 0)] <- NaN
+exprs(gset) <- log2(ex) }
+
+soft=getGEO(filename = "GSE166466_family.soft.gz")
+gpl=soft@gpls$GPL23126@dataTable@table
+
+
+ids=data.frame(
+  ID=gpl$ID,
+  symbol=str_split(gpl$gene_assignment,' // ',simplify = T)[,2]
+)
+head(ids)
+ids=ids[ids$symbol != '',]
+ex=ex[rownames(ex) %in% ids$ID,]
+ids=ids[match(rownames(ex),ids$ID),]
+head(ids) 
+
+colnames(ids)=c('probe_id','symbol')  
+ids$probe_id=as.character(ids$probe_id)
+rownames(ex)=ids$probe_id
+
+ids=ids[ids$probe_id %in%  rownames(ex),]
+ex=ex[ids$probe_id,] 
+
