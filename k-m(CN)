@@ -10,13 +10,22 @@ p1=ggsurvplot(fit1,
              conf.int=T,
              hr=T,
              data = data,
+             surv.median.line = "hv",
            xlab="Time(month)")
-p1=p1$plot
-p3=p1+
-  annotate("text", x = 0, y = 0.3,label = "HR=8.931",colour="black",size=4,hjust=0)+
-  annotate("text",x=0,y=0.2,label = "95%CI:1.041-76.600",colour="black",size=4,hjust=0)+
-  annotate("text",x=0,y=0.1,label = "p=0.045",colour="black",size=4,hjust=0)
-ggsave("sheet3.2.tiff",p3,width = 9, height = 5, dpi = 300)
+##计算公式
+data.survdiff <- survdiff(Surv(month, data$death) ~ group,data = data)
+p.val = 1 - pchisq(data.survdiff$chisq, length(data.survdiff$n) - 1)
+HR = (data.survdiff$obs[2]/data.survdiff$exp[2])/(data.survdiff$obs[1]/data.survdiff$exp[1])
+up95 = exp(log(HR) + qnorm(0.975)*sqrt(1/data.survdiff$exp[2]+1/data.survdiff$exp[1]))
+low95 = exp(log(HR) - qnorm(0.975)*sqrt(1/data.survdiff$exp[2]+1/data.survdiff$exp[1]))
+ci <- paste0(sprintf("%.3f",HR)," [",sprintf("%.3f",low95),", ",sprintf("%.3f",up95),"]")
+
+p1$plot <- p1$plot + 
+  annotate("text", x = 0, y = 0.1, 
+                            label = paste0("HR (95% CI) = ",ci,"\n P value = ",sprintf("%.3f",p.val)),   ###添加P和HR 95%CI,sprintf意思是输出一个字符向量,"%.3f"意思是保留三位小数，"\n"指的是换行
+                            size = 5, color = "black", hjust = 0)+
+  theme(text = element_text(size = 15))
+ggsave("sheet3.2.tiff",p1,width = 9, height = 5, dpi = 300)
 
 
 p2=ggsurvplot(fit1,
@@ -27,10 +36,10 @@ p2=ggsurvplot(fit1,
              legend.title="分组",  #改图例名称
              data = data,
              xlab="时间（月）")
-p2=p2$plot
-p4=p2+
-  annotate("text", x = 0, y = 0.3,label = "HR=8.931",colour="black",size=4,hjust=0)+
-  annotate("text",x=0,y=0.2,label = "95%CI:1.041-76.600",colour="black",size=4,hjust=0)+
-  annotate("text",x=0,y=0.1,label = "p=0.045",colour="black",size=4,hjust=0)
-ggsave("sheet3.2CN.tiff",p4,width = 9, height = 5, dpi = 300)
+p2$plot <- p2$plot + 
+  annotate("text", x = 0, y = 0.1, 
+                            label = paste0("HR (95% CI) = ",ci,"\n P value = ",sprintf("%.3f",p.val)),   ###添加P和HR 95%CI,sprintf意思是输出一个字符向量,"%.3f"意思是保留三位小数，"\n"指的是换行
+                            size = 5, color = "black", hjust = 0)+
+  theme(text = element_text(size = 15))
+ggsave("sheet3.2CN.tiff",p2,width = 9, height = 5, dpi = 300)
 
